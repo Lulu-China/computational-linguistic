@@ -1,0 +1,471 @@
+整体的流程大致可以描述为：
+从Agenda弹出元素，如果Agenda为空，则找下一个位置上的词，形成X(i,j)放入到Agenda中，
+
+然后对X(i,j)匹配所有的规则，形成点规则，加入到ActiveArc中，并扩展弧。
+
+扩展弧操作即将X(i,j)加入到Chart中，然后，检查活动边集上位置为(k,i)的点规则，进行合并，
+
+将合并出的点规则加入到ActiveArc中，并将(k,j)加入到Agenda表中，然后从Agenda中弹出元素，匹配规则，加入到Archive，然后在扩展弧，这样不断循环。
+
+首先说说Chart算法，可以参考这篇文章，说得比较详细。
+
+在《自然语言理解》中对该算法也给了比较明确的说明：
+一、边扩展算法
+	添加一个从位置p1到位置p2的成分C：
+	1、将C加入到chart的位置p1和位置p2之间；
+	2、将任意一条形式为X->X1...•C...Xn的活动边，如果该活动边在位置p0和p1之间，则在位置p0和p1之间添加一条活动边X->X1...C•...Xn；
+	3、对任意一条形式为X->X1...Xn•C的活动边，如果该活动边在位置p0和p1之间，则在位置待处理列表中添加一个新的成分X，该成分的位置在p0和p2之间；
+二、自底而上的Chart句法分析算法
+	执行下列过程，直到输入为空：
+	1、如果待处理列表为空，在词典中查找下一个输入词语的解释，并将它们都加入到待处理列表中；
+	2、从待处理列表中选择一个成分。（我们假定该成分为C，跨度从位置p1到位置p2）；
+	3、对语法中每一条形式为X->C X1...Xn的规则，增加一条活动边X->•C X1...Xn，其跨度为从位置p1到p2；
+	4、采取上述的边扩展算法将C加入到chart中
+
+ok，还是拿例子说话。
+要分析的句子：The large can can hold the water（大罐子能盛水）
+字典表：
+	the: ART(限定词)
+	large: ADJ(形容词)
+	can: N, AUX(助词), V
+	hold: N, V
+	water: N, V
+语法表：
+	S -> NP VP
+	NP -> ART ADJ N
+	NP -> ART N
+	NP -> ADJ N
+	VP -> AUX VP
+	VP -> V NP
+正确的分析过程应该是（忽略不正确的边）
+    1、找到第一个单词，这是个the，生成成分(constituent)C:((ART)0, 1)，并将其放到待处理列表(agenda)中；
+    2、从agenda中取出成份C，到语法表中找以ART开头的所有语法，生成活动边，加到Chart中。在这个步骤是两条：((•ART ADJ N)0, 1)和((•ART N)0, 1)
+    3、对成分C进行处理，扩展符合条件的活动边
+        将((•ART ADJ N)0, 1)扩展为((ART •ADJ N)0, 1)
+        将((•ART N)0, 1)扩展为((ART •N)0, 1)
+    4、加入成分((ADJ)1, 2)，并将((ART •ADJ N)0, 1)扩展为((ART ADJ •N)0, 2)    （其余的步骤护略不讲）
+    5、加入成分((N)2, 3)，并将((ART ADJ N•)0, 3)，这是个不活动边，由它生成成分((NP)0, 3)，并加入到agenda中
+    6、取出成分((NP)0, 3)，加入新的活动边到chart中：((•NP VP)0, 3)
+    7、处理成分((NP)0, 3)，将((•NP VP)0, 3)扩展为((NP •VP)0, 3)
+    8、加入成分((AUX)3, 4)，并加入新边((•AUX VP)3, 4)，并扩展为((AUX •VP)3, 4)
+    9、加入成分((V)4, 5)，并加入新边((•V NP)4, 5)，并扩展为((V •NP)4, 5)
+    10、加入成分((ART)5, 6)，并加入新边((•ART N)5, 6)，并扩展为((ART •N)5, 6)
+    11、加入成分((N)6, 7)，并将((ART •N)5, 6)扩展为((ART N•)5, 7)，生成新的成分((NP)5, 7)
+    12、处理成分((NP)5, 7)，将((V •NP)4, 5)扩展为((V NP•)4, 7)，生成新的成分((VP)4, 7)
+    13、处理成分((VP)4, 7)，将((AUX •VP)3, 4)扩展为((AUX VP•)3, 7)，生成新的成分((VP)3, 7)
+    14、处理成分((VP)3, 7)，将((NP •VP)0, 3)扩展为((NP VP•)0, 7)，生成新的成分((S)0, 7)
+    15、((S)0, 7)的跨度与整个句子相符，分析结束，生成((S)0, 7)的过程就是整个句子的结构。
+在效率方面，由于本例比较短，所以它比前两个自顶向下的搜索算法都要慢。但随着句子的复杂程度增加，搜索算法会显著得变慢。
+代码：
+
+##先写测试：
+class BottomUpChartParserTest < Test::Unit::TestCase
+  def test_the_large_can_can_hold_the_water
+    # define the sentence to be parsered
+    sentence = 'The large can can hold the water'
+
+    # define the dictionary
+    dictionary = {
+      'the'   => ['ART'],
+      'large' => ['ADJ'],
+      'can'   => ['N', 'AUX', 'V'],
+      'hold'  => ['N', 'V'],
+      'water' => ['N', 'V']
+    }
+
+    # define the grammars
+    grammars = {
+      'S'   => ['NP VP'],
+      'NP'  => ['ART ADJ N', 'ART N', 'ADJ N'],
+      'VP'  => ['AUX VP', 'V NP']
+    }
+
+    # define the expected result
+    expected_result = ['ART', 'ADJ', 'N', 'AUX', 'V', 'ART', 'N']
+
+    #创建解析类的对象
+    parser = NLU::Chapter3::BottomUpChartParser.new(dictionary, grammars)
+    #解析句子
+    flag = parser.parse(sentence)
+
+    assert flag #确认返回的flag为真
+    assert parser.result.length == 1 #确认返回结果的长度为1
+    assert_equal expected_result, parser.result[0].get_step() #确认返回结果与期望结果相同
+  end
+end
+
+##定义成分，成分中有一棵树，用来记录整个分析的过程：
+class Constituent
+    #定义类的成员
+    attr_accessor :start, :end, :value, :root #attr_accessor标示这些变量是公有可访问的的
+
+    #构造函数，初始化一棵树
+    def initialize start_index, end_index, value, history
+        @start = start_index
+        @end = end_index
+        @value = value
+        @history = history
+
+        #构造一个Tree
+        @root = Tree.new(value,
+        {
+            :grammar => @value,
+            :start => @start,
+            :end => @end
+        })
+
+        #
+        return @history.each() { |child| @root.add_child(child) }
+    end
+
+    #返回树的所有叶子节点
+    def get_step
+        return @root.get_leaves
+    end
+end
+
+##定义边：
+class Arc
+    #定义类的成员
+    attr_reader :start, :end, :applied_grammar, :position
+
+    #构造函数
+    def initialize(start_index, end_index, applied_grammar, parent_grammar, position, history)
+        @start = start_index
+        @end = end_index
+        @applied_grammar = applied_grammar
+        @parent = parent_grammar
+        @position = position
+        @grammars = applied_grammar.split()
+        @history = []
+        @history.concat(history)
+    end
+
+    def is_active?
+        return @position < @grammars.length
+    end
+
+    def is_next? constituent
+        return @grammars[@position] == constituent.value &&
+            ((@end == constituent.start && @position != 0) ||
+            (@start == constituent.start && @end == constituent.end && @position == 0))
+    end
+
+    def extend_arc constituent
+        raise(ArgumentError, '') unless is_next?(constituent)
+
+        return Arc.new(@start, constituent.end, @applied_grammar, @parent, @position + 1, @history + [constituent.root])
+    end
+
+    def create_next_consitutent
+        return Constituent.new(@start, @end, @parent, @history)
+    end
+
+    def to_s
+        desc = '(('
+        @grammars.each_with_index { |g, index|
+            desc << '•' if index == @position
+            desc << g << ' '
+        }
+        desc.chop!
+        desc << '•' if @position >= @grammars.length
+        desc << ')' << @start.to_s() << ', ' << @end.to_s() << ')'
+        desc
+    end
+end
+
+##定义分析器：
+class BottomUpChartParser
+    #定义类的成员
+    attr_reader :result
+
+    #构造函数（字典表，语法表）
+    def initialize dictionary, grammars
+        raise(ArgumentError, 'The dictionary or grammars can not be nil.') if dictionary.nil? || grammars.nil?
+
+        #初始化字典和语法表
+        @dictionary = dictionary
+        @grammars = grammars
+    end
+
+    # 解析句子
+    def parse sentence
+        raise(ArgumentError, '') if sentence.nil? || sentence.strip().empty?
+        @index = 0
+        @agenda = []
+        @result = []
+        @chart = {}
+        @step = 0
+        @words = sentence.downcase().split() #1.将句子转小写，再切分成一个个的单词
+        while add_word_to_agenda             #2.将一个单词放到代理表中
+            handle_agenda                    #3.处理代理表
+        end
+
+        return !@result.empty?
+    end
+
+    # Look up the interpretations for the next word and add them to the agenda.
+    def add_word_to_agenda
+        return false if @index >= @words.length
+
+        #获取当前单词，并检查其是否包含在字典当中
+        current_word = @words[@index]
+        return false unless @dictionary.has_key?(current_word)
+
+        #遍历当前单词在字典中的值
+        for item in @dictionary[current_word]
+            #将当前单词的起始位置和在字典表中对应的词性，生成成分，并放到待处理表agenda中
+            @agenda << Constituent.new(@index, @index + 1, item, [])
+        end
+
+        @index += 1
+        return true
+    end
+
+    def handle_agenda
+        return if @agenda.empty?
+
+        #从待处理表中取出各个成分
+        temp_agenda = [].concat(@agenda)
+        @agenda.clear
+
+        for constituent in temp_agenda
+            p "Step#{@step} - Input constituent: ((#{constituent.value})， #{constituent.start}, #{constituent.end})"
+ 
+            #将合法的成分放到result中
+            @result << constituent if is_success(constituent)
+
+            #创建边
+            @chart.merge!(create_arc_begin_with(constituent))
+
+            #扩展边
+            extend_arc constituent
+            @step += 1
+        end
+
+        handle_agenda
+    end
+
+    # 如果某个成分正好对应着到整个句子，解析成功
+    def is_success(constituent)
+        if constituent.start == 0 && constituent.end == @words.length
+            return true
+        else
+            return false
+        end
+    end
+
+    def create_arc_begin_with(constituent)
+        match_grammars = {}
+        result = {}
+
+        @grammars.each() { |key, value| 
+            match_grammars.store(key, [])
+            match_grammars[key].concat value.find_all { |grammar|
+                grammar == constituent.value ||
+                grammar.start_with?(constituent.value + ' ') }
+        }
+
+        match_grammars.each { |key, value|
+            value.each() { |g|
+                arc = Arc.new(constituent.start, constituent.end, g, key, 0, [])
+                result.store(arc.to_s(), arc) unless result.has_key?(arc.to_s())
+                p "\s\sAdd new arc to chart: #{arc.to_s()}"
+            }
+        }
+        return result
+    end
+
+    # arc extension
+    def extend_arc(constituent)
+        temp_chart = @chart.values.find_all() { |arc| arc.is_active? }
+        for arc in temp_chart
+            #p arc.to_s
+            #p consitutent
+            if arc.is_next?(constituent)
+                new_arc = arc.extend_arc(constituent)
+                p "\s\sAdd extended arc: #{new_arc.to_s()}"
+
+                @chart.store(new_arc.to_s(), new_arc) unless @chart.has_key?(new_arc.to_s())
+                unless (new_arc.is_active?)
+
+                new_constituent = new_arc.create_next_consitutent()
+                p "\s\sAdd new constituent: ((#{new_constituent.value})#{new_constituent.start}, #{new_constituent.end})"
+
+                @agenda << new_constituent
+                end
+            end
+        end
+    end
+end
+
+最终的运行结果：
+"Step1 - Input constituent: ((ART), 0, 1)"
+"  Add new arc to chart: ((•ART ADJ N), 0, 1)"
+"  Add new arc to chart: ((•ART N), 0, 1)"
+"  Add extended arc: ((ART •ADJ N), 0, 1)"
+"  Add extended arc: ((ART •N), 0, 1)"
+"Step2 - Input constituent: ((ADJ), 1, 2)"
+"  Add new arc to chart: ((•ADJ N), 1, 2)"
+"  Add extended arc: ((ART ADJ •N), 0, 2)"
+"  Add extended arc: ((ADJ •N), 1, 2)"
+"Step3 - Input constituent: ((N), 2, 3)"
+"  Add extended arc: ((ART ADJ N•), 0, 3)"
+"  Add new constituent: ((NP), 0, 3)"
+"  Add extended arc: ((ADJ N•), 1, 3)"
+"  Add new constituent: ((NP), 1, 3)"
+"Step4 - Input constituent: ((AUX), 2, 3)"
+"  Add new arc to chart: ((•AUX VP), 2, 3)"
+"  Add extended arc: ((AUX •VP), 2, 3)"
+"Step5 - Input constituent: ((V), 2, 3)"
+"  Add new arc to chart: ((•V NP), 2, 3)"
+"  Add extended arc: ((V •NP), 2, 3)"
+"Step6 - Input constituent: ((NP), 0, 3)"
+"  Add new arc to chart: ((•NP VP), 0, 3)"
+"  Add extended arc: ((NP •VP), 0, 3)"
+"Step7 - Input constituent: ((NP), 1, 3)"
+"  Add new arc to chart: ((•NP VP), 1, 3)"
+"  Add extended arc: ((NP •VP), 1, 3)"
+"Step8 - Input constituent: ((N), 3, 4)"
+"Step9 - Input constituent: ((AUX), 3, 4)"
+"  Add new arc to chart: ((•AUX VP), 3, 4)"
+"  Add extended arc: ((AUX •VP), 3, 4)"
+"Step10 - Input constituent: ((V), 3, 4)"
+"  Add new arc to chart: ((•V NP), 3, 4)"
+"  Add extended arc: ((V •NP), 3, 4)"
+"Step11 - Input constituent: ((N), 4, 5)"
+"Step12 - Input constituent: ((V), 4, 5)"
+"  Add new arc to chart: ((•V NP), 4, 5)"
+"  Add extended arc: ((V •NP), 4, 5)"
+"Step13 - Input constituent: ((ART), 5, 6)"
+"  Add new arc to chart: ((•ART ADJ N), 5, 6)"
+"  Add new arc to chart: ((•ART N), 5, 6)"
+"  Add extended arc: ((ART •ADJ N), 5, 6)"
+"  Add extended arc: ((ART •N), 5, 6)"
+"Step14 - Input constituent: ((N), 6, 7)"
+"  Add extended arc: ((ART N•), 5, 7)"
+"  Add new constituent: ((NP), 5, 7)"
+"Step15 - Input constituent: ((V), 6, 7)"
+"  Add new arc to chart: ((•V NP), 6, 7)"
+"  Add extended arc: ((V •NP), 6, 7)"
+"Step16 - Input constituent: ((NP), 5, 7)"
+"  Add new arc to chart: ((•NP VP), 5, 7)"
+"  Add extended arc: ((V NP•), 4, 7)"
+"  Add new constituent: ((VP), 4, 7)"
+"  Add extended arc: ((NP •VP), 5, 7)"
+"Step17 - Input constituent: ((VP), 4, 7)"
+"  Add extended arc: ((AUX VP•), 3, 7)"
+"  Add new constituent: ((VP), 3, 7)"
+"Step18 - Input constituent: ((VP), 3, 7)"
+"  Add extended arc: ((AUX VP•), 2, 7)"
+"  Add new constituent: ((VP), 2, 7)"
+"  Add extended arc: ((NP VP•), 0, 7)"
+"  Add new constituent: ((S), 0, 7)"
+"  Add extended arc: ((NP VP•), 1, 7)"
+"  Add new constituent: ((S), 1, 7)"
+"Step19 - Input constituent: ((VP), 2, 7)"
+"Step20 - Input constituent: ((S), 0, 7)"
+"Step21 - Input constituent: ((S), 1, 7)"
+
+已在 3.859 秒内完成。
+1 个测试，0 个失败，0 个错误
+
+第一步，处理'the': The large can can hold the water
+	1、待处理表agenda为空，根据'the'生成成分((ART), 0, 1)放入待处理表agenda中；
+    2、从agenda中取出成份((ART), 0, 1)，到语法表中找以ART开头的所有语法，生成活动边：
+        ((•ART ADJ N), 0, 1)
+        ((•ART N), 0, 1)
+	3、对成分((ART), 0, 1)进行处理，扩展当前位置为ART的所有活动边：
+		((•ART ADJ N)， 0, 1)扩展为((ART •ADJ N), 0, 1)
+		((•ART N), 0, 1)扩展为((ART •N), 0, 1)
+
+第二步，处理'large': The •large can can hold the water
+    1、待处理表agenda为空，根据'the'生成成分((ADJ), 1, 2)放入待处理表agenda中；
+    2、从agenda中取出成份((ADJ), 1, 2)，在语法表中找以ADJ开头的所有语法，生成活动边：((•ADJ N), 1, 2)
+    3、对成分((ADJ), 1, 2)进行处理，扩展当前位置为ADJ的所有活动边：
+        ((ART •ADJ N), 0, 1)扩展为((ART ADJ •N), 0, 2)
+        ((•ADJ N), 1, 2)扩展为((ADJ •N), 1, 2)
+
+第三步，处理'can': The large •can can hold the water
+	1、待处理表agenda为空，根据名词'can'生成成分((N), 2, 3)，放入待处理表agenda中；
+    2、从agenda中取出成份((N), 2, 3)，在语法表中找以N开头的所有语法，没有找到。
+    3、对成分((N), 2, 3)进行处理，扩展当前位置为N的所有活动边:
+        ((ART ADJ •N)0, 2)扩展为((ART ADJ N•), 0, 3)，这是个不活动边，由它生成成分((NP), 0, 3)，并加入到agenda中
+        ((ADJ •N), 1, 2)扩展为((ADJ N•), 1, 3)，这是个不活动边，由它生成成分((NP), 1, 3)，并加入到agenda中
+ 
+    4、根据副词'can'生成成分((AUX), 2, 3)，在语法表中找以AUX开头的所有语法，生成活动边：((•AUX VP), 2, 3)
+    5、扩展以当前位置为AUX的所有边，将((•AUX VP), 2, 3)扩展为((AUX •VP), 2, 3)
+ 
+    6、根据动词'can'生成成分((V), 2, 3)，在语法表中找以V开头的所有语法，生成活动边：((•V NP), 2, 3)
+    7、扩展以当前位置为V的所有边，将((•V NP), 2, 3)扩展为((V •NP), 2, 3)
+
+    8、待处理表agenda不空，从agenda中取出成份((NP), 1, 3)，在语法表中找以NP开头的所有语法，生成活动边：((•NP VP), 1, 3)
+    9、对成分((NP), 1, 3)进行处理，扩展当前位置为N的所有活动边:
+        ((•NP VP), 1, 3)扩展为((NP •VP), 1, 3)
+
+    10、待处理表agenda不空，从agenda中取出成份((NP), 0, 3)，在语法表中找以NP开头的所有语法，生成活动边：((•NP VP), 0, 3)
+    11、对成分((NP), 0, 3)进行处理，扩展当前位置为N的所有活动边:
+        ((•NP VP), 0, 3)扩展为((NP •VP), 0, 3)
+
+第四步，处理'can': The large can •can hold the water
+	1、待处理表agenda为空，根据名词'can'生成成分((N), 3, 4)，放入待处理表agenda中；
+    2、从agenda中取出成份((N), 3, 4)，在语法表中找以N开头的所有语法，没有找到；
+    3、对成分((N), 3, 4)进行处理，扩展当前位置为N的所有活动边，没有找到；
+    4、根据副词'can'生成成分((AUX), 3, 4)，在语法表中找以AUX开头的所有语法，生成活动边：((•AUX VP), 3, 4)
+    5、扩展以当前位置为AUX的所有边，将((•AUX VP), 3, 4)扩展为((AUX •VP), 3, 4)
+    6、根据动词'can'生成成分((V), 3, 4)，在语法表中找以V开头的所有语法，生成活动边：((•V VP), 3, 4)
+    7、扩展以当前位置为V的所有边，将((•V NP), 3, 4)扩展为((V •VP), 3, 4)
+
+第五步，处理'hold': The large can can •hold the water
+    1、待处理表agenda为空，根据名词'hold'生成成分((N), 4, 5)，放入待处理表agenda中；
+    2、从agenda中取出成份((N), 4, 5)，在语法表中找以N开头的所有语法，没有找到；
+    3、对成分((N), 4, 5)进行处理，扩展当前位置为N的所有活动边，没有找到；
+
+    4、待处理表agenda为空，根据动词'hold'生成成分((V), 4, 5)，放入待处理表agenda中；
+    5、从agenda中取出成份((V), 4, 5)，在语法表中找以V开头的所有语法，生成活动边：((•V NP), 4, 5)
+    6、对成分((V), 4, 5)进行处理，扩展当前位置为V的所有活动边，((•V NP), 4, 5)扩展为((V •NP), 4, 5)
+
+第六步，处理'the': The large can can hold •the water
+    1、待处理表agenda为空，根据助词'the'生成成分((ART), 5, 6)，放入待处理表agenda中；
+    2、从agenda中取出成份((ART), 5, 6)，在语法表中找以ART开头的所有语法，生成活动边：
+        ((•ART ADJ N), 5, 6)
+        ((•ART N), 5, 6)
+    3、对成分((ART), 5, 6)进行处理，扩展当前位置为ART的所有活动边：
+        ((•ART ADJ N), 5, 6)扩展为((ART •ADJ N), 5, 6)
+        ((•ART N), 5, 6)扩展为((ART •N), 5, 6)
+
+第七步，处理'water': The large can can hold the •water
+    1、待处理表agenda为空，根据名词'water'生成成分((N), 6, 7)，放入待处理表agenda中；
+    2、从agenda中取出成份((N), 6, 7)，在语法表中找以N开头的所有语法，没有找到；
+    3、对成分((N), 6, 7)进行处理，扩展当前位置为N的所有活动边：
+        ((ART •N), 5, 6)扩展为((ART N•), 5, 7)，这是个不活动边，由它生成成分((NP), 5, 7)，并加入到agenda中
+ 
+    4、根据动词'water'生成成分((V), 6, 7)，放入待处理表agenda中；
+    5、从agenda中取出成份((V), 6, 7)，在语法表中找以V开头的所有语法，生成活动边((•V NP), 6, 7)；
+    6、对成分((V), 6, 7)进行处理，扩展当前位置为V的所有活动边：((•V NP), 6, 7)扩展为((V •NP), 6, 7)
+
+    7、待处理表agenda不空，从中取出成分((NP), 5, 7)，在语法表中找以NP开头的所有语法，生成活动边((•NP VP), 5, 7)
+    8、对成分((NP), 5, 7)进行处理，扩展当前位置为NP的所有活动边：
+        ((V •NP), 4, 7)扩展为((V NP•), 4, 7)，这是个不活动边，由它生成成分((VP), 4, 7)，并加入到agenda中
+        ((•NP VP), 5, 7)扩展为((NP •VP), 5, 7)
+
+    9、待处理表agenda不空，从中取出成分((VP), 4, 7)，在语法表中找以VP开头的所有语法，没有找到；
+    10、对成分((VP), 4, 7)进行处理，扩展当前位置为VP的所有活动边：
+        ((AUX •VP), 3, 7)扩展为((AUX VP•), 3, 7)，这是个不活动边，由他生成成分((VP), 3, 7)，并加入到agenda中
+
+    11、待处理表agenda不空，从中取出成分((VP), 3, 7)，在语法表中找以VP开头的所有语法，没有找到；
+    12、对成分((VP), 3, 7)进行处理，扩展当前位置为VP的所有活动边：
+        ((AUX •VP), 2, 7)扩展为((AUX VP•), 2, 7)，这是个不活动边，由他生成成分((VP), 0, 7)，并加入到agenda中
+
+    13、待处理表agenda不空，从中取出成分((VP), 0, 7)，在语法表中找以VP开头的所有语法，没有找到；
+    14、对成分((VP), 0, 7)进行处理，扩展当前位置为VP的所有活动边：
+        ((NP •VP), 0, 7)扩展为((NP VP•), 0, 7)，这是个不活动边，由他生成成分((S), 0, 7)，并加入到agenda中
+        ((NP •VP), 1, 7)扩展为((NP VP•), 1, 7)，这是个不活动边，由他生成成分((S), 1, 7)，并加入到agenda中
+
+    15、待处理表agenda不空，从中取出成分((S), 0, 7)，在语法表中找以S开头的所有语法，没有找到；
+    16、对成分((S), 0, 7)进行处理，扩展当前位置为VP的所有活动边：
+        ((NP •VP), 1, 7)扩展为((NP VP•), 1, 7)，这是个不活动边，由他生成成分((S), 0, 7)，并加入到agenda中
+
+    17、待处理表agenda不空，从中取出成分((VP), 2, 7)，在语法表中找以VP开头的所有语法，没有找到；
+    18、待处理表agenda不空，从中取出成分((S), 0, 7)，在语法表中找以S开头的所有语法，没有找到；
+    19、待处理表agenda不空，从中取出成分((S), 1, 7)，在语法表中找以S开头的所有语法，没有找到；
